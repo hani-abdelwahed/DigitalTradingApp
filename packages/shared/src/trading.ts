@@ -6,6 +6,8 @@ const decimal = z
   .regex(/^\d{1,20}(\.\d{1,18})?$/, 'Must be a positive decimal number')
   .refine((v) => Number(v) > 0, 'Must be greater than zero');
 
+export const DEFAULT_MAX_SLIPPAGE_PERCENT = '2';
+
 export const ORDER_TYPES = ['market', 'limit', 'stop_loss', 'take_profit', 'trailing_stop'] as const;
 export type OrderType = (typeof ORDER_TYPES)[number];
 export type OrderSide = 'buy' | 'sell';
@@ -27,6 +29,17 @@ export const placeOrderRequest = z
       .regex(/^\d{1,2}(\.\d{1,2})?$/)
       .refine((v) => Number(v) >= 0.1 && Number(v) <= 50, 'Trail must be between 0.1% and 50%')
       .optional(),
+    /**
+     * Slippage protection for orders that fill at the market price (all but limit orders):
+     * the order is rejected rather than filled if the price is worse than the reference by
+     * more than this percentage. The reference is the quote at placement for market orders,
+     * and the trigger or stop level for the others. Defaults to DEFAULT_MAX_SLIPPAGE_PERCENT.
+     */
+    maxSlippagePercent: z
+      .string()
+      .regex(/^\d{1,2}(\.\d{1,2})?$/)
+      .refine((v) => Number(v) >= 0.01 && Number(v) <= 10, 'Slippage limit must be between 0.01% and 10%')
+      .optional(),
     /** Optional idempotency key: resending the same key returns the original order. */
     clientOrderId: z.string().min(1).max(64).regex(/^[\w-]+$/).optional(),
   })
@@ -43,6 +56,10 @@ export const placeOrderRequest = z
     else forbid('triggerPrice');
     if (o.type === 'trailing_stop') need('trailPercent', 'Trail percent');
     else forbid('trailPercent');
+    // A limit price already caps the fill price.
+    if (o.type === 'limit' && o.maxSlippagePercent) {
+      ctx.addIssue({ code: 'custom', path: ['maxSlippagePercent'], message: 'Not used by limit orders' });
+    }
   });
 export type PlaceOrderRequest = z.infer<typeof placeOrderRequest>;
 
@@ -61,6 +78,8 @@ export interface Order {
   trailPercent: string | null;
   /** Trailing stops: the current stop level, which moves with the market. */
   trailStopPrice: string | null;
+  /** Slippage limit in percent; null for limit orders. */
+  maxSlippagePercent: string | null;
   reason: string | null;
   createdAt: string;
   updatedAt: string;
@@ -102,3 +121,13 @@ export const ordersQuery = z.object({
   status: z.enum(['open', 'closed', 'all']).default('all'),
   limit: z.coerce.number().int().min(1).max(500).default(100),
 });
+
+/** A pause on new orders and order triggers, for one symbol or (symbol null) everything. */
+export interface TradingHalt {
+  symbol: string | null;
+  /** `automatic` halts come from the volatility circuit breaker; `manual` ones from an operator. */
+  kind: 'automatic' | 'manual';
+  reason: string;
+  /** When trading resumes; null until an operator lifts it. */
+  until: string | null;
+}

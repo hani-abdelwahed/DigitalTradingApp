@@ -98,6 +98,9 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/auth/mfa/disable', { onRequest: app.authenticate, config: credentialLimit }, async (req) => {
     const body = mfaDisableRequest.parse(req.body);
-    return toPublicUser(await auth.disableMfa(req.user, body.code, body.password, ctx(req)));
+    const user = await auth.disableMfa(req.user, body.code, body.password, ctx(req));
+    // Keys that can trade require two-factor; without it, none of the user's keys stay valid.
+    await app.apiKeys.revokeAll(user.id);
+    return toPublicUser(user);
   });
 }

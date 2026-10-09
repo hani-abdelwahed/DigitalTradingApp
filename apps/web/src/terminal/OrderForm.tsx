@@ -1,5 +1,14 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { ORDER_TYPES, type Instrument, type OrderSide, type OrderType, type PlaceOrderRequest, type Ticker } from '@dta/shared';
+import {
+  DEFAULT_MAX_SLIPPAGE_PERCENT,
+  ORDER_TYPES,
+  type Instrument,
+  type OrderSide,
+  type OrderType,
+  type PlaceOrderRequest,
+  type Ticker,
+  type TradingHalt,
+} from '@dta/shared';
 import { api, errorMessage } from '../api';
 import { fmt } from '../market/format';
 import { useChannel } from '../market/hooks';
@@ -22,6 +31,23 @@ const TYPE_HELP: Record<OrderType, string> = {
 };
 
 const FEE = { crypto: 0.001, equity: 0 } as const;
+const HALT_POLL_MS = 15_000;
+
+/** Trading halts that apply to `symbol`, polled while the form is open. */
+function useHalt(symbol: string): TradingHalt | null {
+  const [halts, setHalts] = useState<TradingHalt[]>([]);
+  useEffect(() => {
+    let live = true;
+    const load = () => void api.halts().then((h) => live && setHalts(h)).catch(() => undefined);
+    load();
+    const t = setInterval(load, HALT_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, []);
+  return halts.find((h) => h.symbol === null) ?? halts.find((h) => h.symbol === symbol) ?? null;
+}
 
 /** Trims a number to `dp` decimals without exponent notation or trailing zeros. */
 function toInput(v: number, dp: number): string {
@@ -36,6 +62,8 @@ export function OrderForm({ instrument }: { instrument: Instrument }) {
   const [quantity, setQuantity] = useState('');
   const [price, setPrice] = useState('');
   const [trail, setTrail] = useState('2');
+  const [slippage, setSlippage] = useState(DEFAULT_MAX_SLIPPAGE_PERCENT);
+  const halt = useHalt(instrument.symbol);
   const [ticker, setTicker] = useState<Ticker | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -66,7 +94,12 @@ export function OrderForm({ instrument }: { instrument: Instrument }) {
       side === 'sell'
         ? availableBase * pct
         : estPrice
-          ? (availableQuote * pct) / (estPrice * (1 + FEE[instrument.assetClass]) * (type === 'market' ? 1.02 : 1.05))
+          ? // The server reserves the worst accepted price, so size the order to fit that.
+            (availableQuote * pct) /
+            (estPrice *
+              (1 + FEE[instrument.assetClass]) *
+              (type === 'limit' ? 1 : 1 + (Number(slippage) || 0) / 100) *
+              (type === 'trailing_stop' ? 1 + (Number(trail) || 0) / 100 : 1))
           : 0;
     setQuantity(toInput(Math.floor(raw / step) * step, dp));
   }
@@ -84,6 +117,7 @@ export function OrderForm({ instrument }: { instrument: Instrument }) {
       ...(type === 'limit' ? { limitPrice: price } : {}),
       ...(type === 'stop_loss' || type === 'take_profit' ? { triggerPrice: price } : {}),
       ...(type === 'trailing_stop' ? { trailPercent: trail } : {}),
+      ...(type !== 'limit' ? { maxSlippagePercent: slippage } : {}),
     };
     try {
       const order = await api.placeOrder(body);
@@ -147,6 +181,12 @@ export function OrderForm({ instrument }: { instrument: Instrument }) {
             <input inputMode="decimal" value={trail} onChange={(e) => setTrail(e.target.value.replace(/[^\d.]/g, ''))} required />
           </label>
         )}
+        {type !== 'limit' && (
+          <label title="The order is rejected instead of filling at a price this much worse than expected.">
+            Max slippage (%)
+            <input inputMode="decimal" value={slippage} onChange={(e) => setSlippage(e.target.value.replace(/[^\d.]/g, ''))} required />
+          </label>
+        )}
         <label>
           Quantity ({instrument.base})
           <input inputMode="decimal" value={quantity} onChange={(e) => setQuantity(e.target.value.replace(/[^\d.]/g, ''))} required />
@@ -170,8 +210,14 @@ export function OrderForm({ instrument }: { instrument: Instrument }) {
           <dt>Est. fee</dt>
           <dd>{fee != null ? `${fmt(fee, 2)} ${instrument.quote}` : '—'}</dd>
         </dl>
+        {halt && (
+          <p className="halt-banner">
+            Trading {halt.symbol ? `in ${halt.symbol} ` : ''}is paused{halt.until ? ` until ${new Date(halt.until).toLocaleTimeString()}` : ''}:{' '}
+            {halt.reason}
+          </p>
+        )}
         {result && <p className={result.ok ? 'success small' : 'error'}>{result.text}</p>}
-        <button className={side === 'buy' ? 'submit buy' : 'submit sell'} disabled={busy || !quantity}>
+        <button className={side === 'buy' ? 'submit buy' : 'submit sell'} disabled={busy || !quantity || !!halt}>
           {side === 'buy' ? 'Buy' : 'Sell'} {instrument.base}
         </button>
         <p className="muted small">Paper trading: no real money is used.</p>

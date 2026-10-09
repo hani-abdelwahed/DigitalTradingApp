@@ -17,6 +17,8 @@ export default defineConfig({
       '/portfolio': api,
       '/orders': api,
       '/fills': api,
+      '/halts': api,
+      '/api-keys': api,
       '/ws': { target: api.replace(/^http/, 'ws'), ws: true },
     },
   },

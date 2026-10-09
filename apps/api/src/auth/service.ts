@@ -5,7 +5,7 @@ import type { Config } from '../config.js';
 import type { Db } from '../db/client.js';
 import { auditLog, sessions, users, type User } from '../db/schema.js';
 import { randomToken, sha256, type SecretBox } from '../lib/crypto.js';
-import { conflict, tooManyRequests, unauthorized } from '../lib/errors.js';
+import { badRequest, conflict, tooManyRequests, unauthorized } from '../lib/errors.js';
 import { dummyPasswordHash, hashPassword, verifyPassword } from './passwords.js';
 import { generateSecret, otpauthUrl, verifyTotp } from './totp.js';
 
@@ -205,6 +205,21 @@ export class AuthService {
     return updated!;
   }
 
+  /**
+   * Re-checks the password, and the two-factor code when two-factor is on, before a sensitive
+   * action such as creating an API key.
+   */
+  async verifyStepUp(user: User, password: string, code: string | undefined, ctx: RequestContext): Promise<void> {
+    if (!(await verifyPassword(user.passwordHash, password))) {
+      await this.audit('step_up_failed', user.id, ctx);
+      throw unauthorized('invalid_credentials', 'Password is incorrect');
+    }
+    if (user.mfaEnabled) {
+      if (!code) throw badRequest('mfa_code_required', 'Enter the code from your authenticator app');
+      await this.consumeTotp(user, code, ctx);
+    }
+  }
+
   private async consumeTotp(user: User, code: string, ctx: RequestContext): Promise<void> {
     const secret = this.box.decrypt(user.mfaSecretEnc!);
     const step = verifyTotp(secret, code, { afterStep: user.mfaLastStep });
@@ -259,7 +274,7 @@ export class AuthService {
     return user;
   }
 
-  private async audit(
+  async audit(
     event: string,
     userId: string | null,
     ctx: RequestContext,

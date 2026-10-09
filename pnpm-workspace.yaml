@@ -4,3 +4,6 @@ packages:
 onlyBuiltDependencies:
   - argon2
   - esbuild
+overrides:
+  # drizzle-kit pulls in an old esbuild (GHSA-67mh-4wv8-2f99) through @esbuild-kit.
+  '@esbuild-kit/core-utils>esbuild': ^0.25.0
