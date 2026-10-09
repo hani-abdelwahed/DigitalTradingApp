@@ -1,0 +1,41 @@
+:root {
+  --bg: #0b0e14;
+  --panel: #131722;
+  --border: #2a2e39;
+  --text: #d1d4dc;
+  --muted: #8a8f9c;
+  --accent: #2962ff;
+  --up: #26a69a;
+  --down: #ef5350;
+  color-scheme: dark;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+h1, h2 { margin: 0 0 4px; font-weight: 600; }
+p { margin: 0; }
+h1 { font-size: 22px; }
+h2 { font-size: 16px; }
+.center { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 12px; }
+.card form { display: flex; flex-direction: column; gap: 12px; }
+.card.wide { max-width: none; grid-column: 1 / -1; min-height: 240px; }
+label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+input { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 10px 12px; font-size: 15px; }
+input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+button { background: var(--accent); color: white; border: 0; border-radius: 6px; padding: 10px 14px; font-size: 14px; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: 0.6; cursor: default; }
+button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+button.link { background: none; color: var(--muted); font-weight: 400; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.mono { font-family: ui-monospace, monospace; word-break: break-all; }
+.error { color: var(--down); margin: 0; font-size: 13px; }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.topbar span { margin-left: auto; font-size: 13px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; padding: 16px; }
+.grid .card { max-width: none; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; margin-right: 6px; }
+.badge.on { background: rgba(38, 166, 154, 0.15); color: var(--up); }
+.badge.off { background: rgba(138, 143, 156, 0.15); color: var(--muted); }
+img { background: white; padding: 8px; border-radius: 6px; align-self: center; }
