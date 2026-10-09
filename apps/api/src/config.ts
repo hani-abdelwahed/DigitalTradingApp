@@ -15,6 +15,12 @@ const envSchema = z.object({
   ENCRYPTION_KEY: base64Key,
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(15 * 60),
   REFRESH_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(30 * 24 * 60 * 60),
+  // Market data. Binance public data needs no key; equities use Alpaca when keys are set,
+  // and generated prices otherwise.
+  BINANCE_ENABLED: z.stringbool().default(true),
+  ALPACA_KEY_ID: z.string().min(1).optional(),
+  ALPACA_SECRET_KEY: z.string().min(1).optional(),
+  ALPACA_FEED: z.enum(['iex', 'sip']).default('iex'),
 });
 
 export type Config = z.infer<typeof envSchema>;

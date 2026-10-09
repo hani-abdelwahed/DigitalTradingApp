@@ -1,5 +1,8 @@
 import type {
   ApiError,
+  Candle,
+  Instrument,
+  Timeframe,
   LoginRequest,
   LoginResponse,
   MfaSetupResponse,
@@ -22,6 +25,27 @@ export class ApiRequestError extends Error {
 // The access token lives only in memory; the refresh token is an httpOnly cookie the page cannot read.
 let accessToken: string | null = null;
 let refreshing: Promise<TokenResponse | null> | null = null;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+const tokenListeners = new Set<(token: string | null) => void>();
+
+export function getAccessToken(): string | null {
+  return accessToken;
+}
+
+/** Notified whenever the access token changes, e.g. so the market stream can re-authenticate. */
+export function onAccessToken(listener: (token: string | null) => void): () => void {
+  tokenListeners.add(listener);
+  return () => tokenListeners.delete(listener);
+}
+
+function setAccessToken(token: string | null, expiresIn?: number): void {
+  accessToken = token;
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
+  // Renew a minute before expiry so long-lived streams never see an expired token.
+  if (token && expiresIn) refreshTimer = setTimeout(() => void refreshSession(), Math.max(5, expiresIn - 60) * 1000);
+  for (const l of tokenListeners) l(token);
+}
 
 async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
   const headers = new Headers(init.headers);
@@ -39,7 +63,7 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
 }
 
 function store(t: TokenResponse): TokenResponse {
-  accessToken = t.accessToken;
+  setAccessToken(t.accessToken, t.expiresIn);
   return t;
 }
 
@@ -51,7 +75,7 @@ export function refreshSession(): Promise<TokenResponse | null> {
   refreshing ??= post<TokenResponse>('/auth/refresh')
     .then(store)
     .catch(() => {
-      accessToken = null;
+      setAccessToken(null);
       return null;
     })
     .finally(() => {
@@ -71,13 +95,23 @@ export const api = {
     post<TokenResponse>('/auth/mfa/verify', { mfaToken, code }).then(store),
   logout: async () => {
     await post<void>('/auth/logout');
-    accessToken = null;
+    setAccessToken(null);
   },
   me: () => request<PublicUser>('/auth/me'),
   mfaSetup: () => post<MfaSetupResponse>('/auth/mfa/setup'),
   mfaEnable: (code: string) => post<PublicUser>('/auth/mfa/enable', { code }),
   mfaDisable: (code: string, password: string) => post<PublicUser>('/auth/mfa/disable', { code, password }),
+  instruments: () => request<Instrument[]>('/market/instruments'),
+  candles: (symbol: string, timeframe: Timeframe, limit = 500) =>
+    request<Candle[]>(`/market/candles?${new URLSearchParams({ symbol, timeframe, limit: String(limit) })}`),
 };
+
+export function marketSocketUrl(): string {
+  const base = new URL(BASE || window.location.origin);
+  base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+  base.pathname = '/ws/market';
+  return base.toString();
+}
 
 export function errorMessage(err: unknown): string {
   if (err instanceof ApiRequestError) {

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import QRCode from 'qrcode';
 import type { PublicUser } from '@dta/shared';
 import { api, errorMessage } from '../api';
+import { Terminal } from '../terminal/Terminal';
 
 interface Props {
   user: PublicUser;
@@ -9,23 +10,34 @@ interface Props {
   onSignOut: () => void;
 }
 
+type Tab = 'trade' | 'security';
+
 export function Dashboard({ user, onUserChange, onSignOut }: Props) {
+  const [tab, setTab] = useState<Tab>('trade');
   return (
     <>
       <header className="topbar">
         <strong>DigitalTradingApp</strong>
+        <nav className="tabs">
+          <button className={tab === 'trade' ? 'active' : ''} onClick={() => setTab('trade')}>
+            Trade
+          </button>
+          <button className={tab === 'security' ? 'active' : ''} onClick={() => setTab('security')}>
+            Security
+          </button>
+        </nav>
         <span className="muted">{user.email}</span>
         <button className="secondary" onClick={onSignOut}>
           Sign out
         </button>
       </header>
-      <main className="grid">
-        <section className="card wide">
-          <h2>Trading terminal</h2>
-          <p className="muted">Charts, order book and order entry arrive in the next step.</p>
-        </section>
-        <MfaPanel user={user} onUserChange={onUserChange} />
-      </main>
+      {tab === 'trade' ? (
+        <Terminal />
+      ) : (
+        <main className="grid">
+          <MfaPanel user={user} onUserChange={onUserChange} />
+        </main>
+      )}
     </>
   );
 }

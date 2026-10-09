@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
+import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Redis } from 'ioredis';
 import { ZodError } from 'zod';
@@ -13,8 +14,11 @@ import type { Db } from './db/client.js';
 import type { User } from './db/schema.js';
 import { SecretBox } from './lib/crypto.js';
 import { HttpError, unauthorized } from './lib/errors.js';
+import { MarketHub, MarketRegistry, createMarketRegistry } from './market/index.js';
 import authRoutes from './routes/auth.js';
 import healthRoutes from './routes/health.js';
+import marketWsRoutes from './routes/market-ws.js';
+import marketRoutes from './routes/market.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -22,6 +26,8 @@ declare module 'fastify' {
     db: Db;
     redis: Redis;
     auth: AuthService;
+    market: MarketRegistry;
+    marketHub: MarketHub;
     authenticate: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
@@ -37,10 +43,12 @@ export interface AppDeps {
   config: Config;
   db: Db;
   redis: Redis;
+  /** Defaults to the providers the config enables. */
+  market?: MarketRegistry;
   logger?: boolean;
 }
 
-export async function buildApp({ config, db, redis, logger = true }: AppDeps): Promise<FastifyInstance> {
+export async function buildApp({ config, db, redis, market, logger = true }: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
     logger: logger && {
       level: config.NODE_ENV === 'production' ? 'info' : 'debug',
@@ -95,7 +103,18 @@ export async function buildApp({ config, db, redis, logger = true }: AppDeps): P
     return reply.code(status).send({ error: code, message: (err as Error).message } satisfies ApiError);
   });
 
+  const registry = market ?? createMarketRegistry(config, app.log);
+  app.decorate('market', registry);
+  app.decorate('marketHub', new MarketHub(registry));
+  app.addHook('onClose', async () => {
+    app.marketHub.close();
+    await registry.close();
+  });
+
+  await app.register(websocket, { options: { maxPayload: 4096 } });
   await app.register(healthRoutes);
   await app.register(authRoutes);
+  await app.register(marketRoutes);
+  await app.register(marketWsRoutes);
   return app;
 }
