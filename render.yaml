@@ -1,0 +1,61 @@
+# Render Blueprint: the whole demo on Render's free tier, in one account.
+# Dashboard → New → Blueprint → pick this repository. See docs/deploy.md.
+services:
+  - type: web
+    name: digitaltradingapp
+    runtime: node
+    # Frankfurt: Binance's public market data is blocked from US regions.
+    region: frankfurt
+    plan: free
+    # NODE_ENV=production below would make pnpm skip the build tools, so install as development.
+    buildCommand: >-
+      npm install --no-save --prefix .pnpm-bin pnpm@10.28.0 &&
+      export PATH="$PWD/.pnpm-bin/node_modules/.bin:$PATH" &&
+      NODE_ENV=development pnpm install --frozen-lockfile &&
+      pnpm build
+    startCommand: node apps/api/dist/db/migrate.js && node apps/api/dist/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # Render's proxy sets X-Forwarded-For.
+      - key: TRUST_PROXY
+        value: "true"
+      # The API serves the web app, so both share the service's URL (WEB_ORIGIN defaults to it).
+      - key: WEB_DIST_DIR
+        value: apps/web/dist
+      - key: DATABASE_URL
+        fromDatabase:
+          name: digitaltradingapp-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: digitaltradingapp-cache
+          property: connectionString
+      # Random 256-bit values, generated once by Render.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      # Optional: real US stock prices. Leave blank for simulated prices.
+      - key: ALPACA_KEY_ID
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+
+  - type: keyvalue
+    name: digitaltradingapp-cache
+    region: frankfurt
+    plan: free
+    # Reachable only from services in this account.
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+
+databases:
+  - name: digitaltradingapp-db
+    region: frankfurt
+    plan: free
+    postgresMajorVersion: "16"

@@ -28,6 +28,10 @@ Generate `JWT_SECRET` and `ENCRYPTION_KEY` with:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
+## Put it online
+
+[docs/deploy.md](docs/deploy.md) deploys the demo to Render's free tier from `render.yaml`: one web service that serves both the API and the web app, plus Postgres and Redis.
+
 ## Market data
 
 | Market | Source | Account needed |

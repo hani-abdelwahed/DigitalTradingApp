@@ -3,7 +3,9 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
+import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
+import { resolve } from 'node:path';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Redis } from 'ioredis';
 import { ZodError } from 'zod';
@@ -176,5 +178,21 @@ export async function buildApp({ config, db, redis, market, logger = true }: App
   await app.register(marketRoutes);
   await app.register(marketWsRoutes);
   await app.register(tradingRoutes);
+
+  if (config.WEB_DIST_DIR) {
+    const root = resolve(config.WEB_DIST_DIR);
+    await app.register(fastifyStatic, { root, wildcard: false, index: 'index.html' });
+    // Hashed asset files never change, so browsers may keep them; index.html must stay fresh.
+    app.addHook('onSend', async (req, reply) => {
+      if (req.url.startsWith('/assets/')) reply.header('cache-control', 'public, max-age=31536000, immutable');
+    });
+    // Client-side routes load the app; anything else unknown stays a JSON 404.
+    app.setNotFoundHandler((req, reply) => {
+      if (req.method === 'GET' && req.headers.accept?.includes('text/html')) {
+        return reply.header('cache-control', 'no-cache').sendFile('index.html');
+      }
+      return reply.code(404).send({ error: 'not_found', message: 'Not found' } satisfies ApiError);
+    });
+  }
   return app;
 }
