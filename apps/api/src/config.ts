@@ -24,6 +24,9 @@ const envSchema = z.object({
   ALPACA_KEY_ID: z.string().min(1).optional(),
   ALPACA_SECRET_KEY: z.string().min(1).optional(),
   ALPACA_FEED: z.enum(['iex', 'sip']).default('iex'),
+  // Built web app (apps/web/dist) to serve from this server, so the app and API share one
+  // origin. Unset when the web app is hosted separately or run with Vite.
+  WEB_DIST_DIR: z.string().min(1).optional(),
   // Pre-trade risk limits.
   /** Largest single order, in units of the quote currency (USD or USDT). */
   MAX_ORDER_NOTIONAL: z.coerce.number().positive().default(1_000_000),
@@ -47,7 +50,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         ctx.addIssue({ code: 'custom', path: ['WEB_ORIGIN'], message: 'must be https in production' });
       }
     })
-    .safeParse(env);
+    .safeParse({
+      // Hosting dashboards often save blank fields as empty strings; treat them as unset.
+      ...Object.fromEntries(Object.entries(env).filter(([, v]) => v !== '')),
+      // On Render, default the origin to the service's own public URL.
+      WEB_ORIGIN: env.WEB_ORIGIN || env.RENDER_EXTERNAL_URL || undefined,
+    });
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n');
     throw new Error(`Invalid environment configuration:\n${issues}`);
