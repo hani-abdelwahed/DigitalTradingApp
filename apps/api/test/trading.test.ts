@@ -7,7 +7,8 @@ import { signUp, useTestApp } from './helpers.js';
 import { ManualProvider } from './manual-provider.js';
 
 const market = new ManualProvider();
-const ctx = useTestApp({ providers: [market] });
+// These tests jump prices around freely; the circuit breaker has its own tests.
+const ctx = useTestApp({ providers: [market], env: { CIRCUIT_BREAKER_PERCENT: '0' } });
 let token: string;
 
 const auth = () => ({ authorization: `Bearer ${token}` });

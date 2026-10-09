@@ -1,5 +1,9 @@
 import type {
   ApiError,
+  ApiKey,
+  CreateApiKeyRequest,
+  CreatedApiKey,
+  TradingHalt,
   Candle,
   Fill,
   Order,
@@ -114,6 +118,10 @@ export const api = {
   fills: () => request<Fill[]>('/fills?limit=100'),
   placeOrder: (body: PlaceOrderRequest) => post<Order>('/orders', body),
   cancelOrder: (id: string) => request<Order>(`/orders/${id}`, { method: 'DELETE' }),
+  halts: () => request<TradingHalt[]>('/halts'),
+  apiKeys: () => request<ApiKey[]>('/api-keys'),
+  createApiKey: (body: CreateApiKeyRequest) => post<CreatedApiKey>('/api-keys', body),
+  revokeApiKey: (id: string) => request<void>(`/api-keys/${id}`, { method: 'DELETE' }),
 };
 
 export function marketSocketUrl(): string {

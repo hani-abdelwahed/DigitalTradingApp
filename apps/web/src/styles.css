@@ -134,3 +134,13 @@ img { background: white; padding: 8px; border-radius: 6px; align-self: center; }
   .stat.venue { margin-left: 0; }
   .topbar { flex-wrap: wrap; }
 }
+
+/* API keys */
+.key-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.key-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; }
+.new-key { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--up); border-radius: 6px; }
+.new-key code { word-break: break-all; user-select: all; }
+.row { display: flex; gap: 8px; }
+.check { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.check input { width: auto; }
+.halt-banner { background: rgba(255, 167, 38, 0.12); color: #ffa726; border: 1px solid rgba(255, 167, 38, 0.4); border-radius: 6px; padding: 8px 10px; font-size: 13px; margin: 0; }

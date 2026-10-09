@@ -1,6 +1,6 @@
 # DigitalTradingApp
 
-A full-stack trading app for stocks/ETFs and crypto. So far: accounts with two-factor sign-in; a trading screen with live charts, technical indicators, order book and recent trades; and paper trading with five order types, a double-entry ledger, positions and P&L.
+A full-stack trading app for stocks/ETFs and crypto. So far: accounts with two-factor sign-in; a trading screen with live charts, technical indicators, order book and recent trades; paper trading with five order types, a double-entry ledger, positions and P&L; and the safety controls needed before real money: scoped API keys, slippage protection, pre-trade limits, circuit breakers and a kill switch.
 
 ## Layout
 
@@ -52,7 +52,7 @@ Each account starts with 100,000 USD (for stocks) and 100,000 USDT (for crypto).
 | Take-profit | The price reaches your target, then at market |
 | Trailing stop | The price pulls back by the trail % from its best level since you placed it, then at market |
 
-Placing an order reserves (holds) what it needs: the quote currency for buys, the asset for sells. The hold is released when the order fills or is cancelled. Orders, holds and fills are written to a double-entry ledger (`ledger_accounts`, `ledger_transactions`, `ledger_entries`). The database enforces its rules:
+Placing an order reserves (holds) what it needs: the asset for sells, and for buys the quote currency at the worst price the order can fill at (its limit, or its reference price plus the slippage allowance). The hold is released when the order fills or is cancelled. Orders, holds and fills are written to a double-entry ledger (`ledger_accounts`, `ledger_transactions`, `ledger_entries`). The database enforces its rules:
 - every transaction balances to zero per asset;
 - user balances never go negative;
 - each account's balance always equals the sum of its entries;
@@ -62,6 +62,40 @@ Positions use average-cost accounting, and `TradingService.reconcile()` cross-ch
 
 API: `GET /portfolio`, `GET /orders?status=open|closed|all`, `POST /orders`, `DELETE /orders/:id`, `GET /fills`. Send `clientOrderId` to make retries safe. Order updates are pushed on the WebSocket's private `orders` channel.
 
+## Risk controls
+
+**Slippage protection.** Every order that fills at the market price (all but limit orders) has a `maxSlippagePercent`, 2% unless you set it (0.01% to 10%). If the fill price would be worse than the reference by more than that, the order is rejected instead, and its hold released. The reference is the last price for market orders (so a wide spread is caught) and the trigger or stop level for stop-loss, take-profit and trailing stops (so a gap through the stop is caught). The trade-off: a protected stop can be rejected in a crash, leaving the position open.
+
+**Pre-trade limits** (settings in `apps/api/.env.example`): a maximum order size in quote currency, a maximum number of open orders per account, and a price band that refuses limit orders priced far through the market as likely typos.
+
+**Volatility circuit breaker.** If a symbol's price moves more than 10% within 5 minutes, trading in it pauses for 5 minutes: new orders are refused and open orders do not trigger. Cancelling still works. It watches every symbol with open orders.
+
+**Kill switch.** Operators can halt one symbol or everything; every API instance picks it up within a second:
+
+```sh
+pnpm --filter @dta/api halt on all "Exchange incident"
+pnpm --filter @dta/api halt on BTC-USDT "Bad prints from the feed"
+pnpm --filter @dta/api halt off all
+pnpm --filter @dta/api halt list
+```
+
+`GET /halts` lists current halts, and the order form shows them.
+
+**Upstream circuit breaker.** After 5 straight failures from a market data venue's REST API, chart history requests to it fail fast for 30 seconds before one trial request is let through.
+
+**Rate limits.** 300 requests a minute per IP overall, 10 a minute per IP on endpoints that take a password or code, and 60 order placements or cancels a minute per account.
+
+## API keys
+
+Create keys under Security in the web app. A key is shown once; the server keeps only its SHA-256.
+
+| Scope | Allows |
+| --- | --- |
+| `read` | Market data, portfolio, orders, fills, halts, and the market WebSocket |
+| `trade` | Placing and cancelling orders (includes `read`) |
+
+Send a key as `X-API-Key: dta_…` or `Authorization: Bearer dta_…`, or as the token in the WebSocket `auth` message. Keys can never manage sign-in, two-factor or other keys. Creating one needs your password, plus a two-factor code when two-factor is on; keys that can trade need two-factor on, and turning two-factor off revokes all your keys. Keys expire after 30, 90 or 365 days, or never. Orders record which key placed them.
+
 ## Checks
 
 ```sh
@@ -70,7 +104,9 @@ pnpm test       # needs Postgres and Redis; see apps/api/test/setup.ts for defau
 pnpm build
 ```
 
-## Security model (sign-in)
+## Security model
+
+See [docs/security-review.md](docs/security-review.md) for the full review and what is left before going live.
 
 - Passwords hashed with Argon2id; at least 12 characters.
 - Access tokens are short-lived JWTs (15 minutes) kept in memory by the web app.

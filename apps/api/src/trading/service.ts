@@ -2,11 +2,22 @@ import { EventEmitter } from 'node:events';
 import { Decimal } from 'decimal.js';
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
-import type { Fill, Instrument, Order, PlaceOrderRequest, Portfolio, Ticker } from '@dta/shared';
+import {
+  DEFAULT_MAX_SLIPPAGE_PERCENT,
+  type Fill,
+  type Instrument,
+  type Order,
+  type PlaceOrderRequest,
+  type Portfolio,
+  type Ticker,
+  type TradingHalt,
+} from '@dta/shared';
 import type { Db } from '../db/client.js';
 import { fills, ledgerTransactions, orders, positions, type OrderRow } from '../db/schema.js';
 import { HttpError, conflict } from '../lib/errors.js';
 import type { MarketRegistry } from '../market/registry.js';
+import type { HaltStore } from './halts.js';
+import type { VolatilityBreaker } from './volatility-breaker.js';
 import { InsufficientFundsError, holdPostings, isInsufficientFunds, postLedger, userBalances, type Posting } from './ledger.js';
 
 type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -15,10 +26,6 @@ type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 export const STARTING_BALANCES: Record<string, string> = { USD: '100000', USDT: '100000' };
 /** Taker fee rate by asset class. Equities are commission-free, as at most US brokers. */
 const FEE_RATE = { crypto: new Decimal('0.001'), equity: new Decimal(0) } as const;
-// Buys whose fill price is unknown in advance (market, stop, trailing) reserve extra headroom;
-// any excess is released when the order fills.
-const MARKET_BUFFER = new Decimal('1.02');
-const TRIGGER_BUFFER = new Decimal('1.05');
 const QUOTE_STALE_MS = 30_000;
 const QUOTE_WAIT_MS = 5_000;
 const IDLE_UNWATCH_MS = 60_000;
@@ -53,6 +60,7 @@ export function toOrder(o: OrderRow): Order {
     triggerPrice: str(o.triggerPrice),
     trailPercent: str(o.trailPercent),
     trailStopPrice,
+    maxSlippagePercent: str(o.maxSlippagePercent),
     reason: o.reason,
     createdAt: o.createdAt.toISOString(),
     updatedAt: o.updatedAt.toISOString(),
@@ -72,6 +80,25 @@ export interface TradingEvents {
   order: [userId: string, order: Order];
 }
 
+/** Pre-trade risk limits. */
+export interface RiskLimits {
+  /** Largest single order, in quote currency. */
+  maxOrderNotional: number;
+  maxOpenOrders: number;
+  /** How far through the market a limit price may be before it is refused as a likely typo. */
+  priceBandPercent: number;
+}
+
+export interface TradingOptions {
+  limits: RiskLimits;
+  breaker: VolatilityBreaker;
+  halts: HaltStore;
+}
+
+export interface PlaceOrderMeta {
+  apiKeyId?: string | null;
+}
+
 /**
  * Paper-trading order management: places and cancels orders, reserves funds, watches live
  * prices and fills orders when their conditions are met, recording everything in the ledger.
@@ -85,24 +112,35 @@ export class TradingService extends EventEmitter<TradingEvents> {
   /** Per-symbol queue so price updates are processed one at a time, in order. */
   private readonly queues = new Map<string, Promise<void>>();
 
+  private readonly limits: RiskLimits;
+  readonly breaker: VolatilityBreaker;
+  readonly halts: HaltStore;
+
   constructor(
     private readonly db: Db,
     private readonly market: MarketRegistry,
     private readonly log: FastifyBaseLogger,
+    opts: TradingOptions,
     private readonly now: () => number = Date.now,
   ) {
     super();
+    this.limits = opts.limits;
+    this.breaker = opts.breaker;
+    this.halts = opts.halts;
     // One listener per connected WebSocket.
     this.setMaxListeners(0);
   }
 
   /** Loads open orders and starts watching their markets. */
   async start(): Promise<void> {
+    await this.halts.refresh();
+    this.halts.start();
     const rows = await this.db.select().from(orders).where(eq(orders.status, 'open'));
     for (const o of rows) this.track(o);
   }
 
   stop(): void {
+    this.halts.stop();
     for (const w of this.watchers.values()) {
       w.stop();
       if (w.idleTimer) clearTimeout(w.idleTimer);
@@ -189,12 +227,45 @@ export class TradingService extends EventEmitter<TradingEvents> {
     }));
   }
 
+  /** Current trading halts, manual and automatic. */
+  async listHalts(): Promise<TradingHalt[]> {
+    const manual = await this.halts.refresh();
+    return [
+      ...manual.map((h) => ({ symbol: h.symbol, kind: 'manual' as const, reason: h.reason, until: null })),
+      ...this.breaker.list().map((h) => ({
+        symbol: h.symbol,
+        kind: 'automatic' as const,
+        reason: h.reason,
+        until: new Date(h.until).toISOString(),
+      })),
+    ];
+  }
+
+  /** Throws if new orders in `symbol` are paused. */
+  private assertNotHalted(symbol: string): void {
+    const manual = this.halts.haltFor(symbol);
+    if (manual) {
+      throw new HttpError(503, 'trading_halted', `Trading ${manual.symbol ? `in ${symbol} ` : ''}is paused: ${manual.reason}`);
+    }
+    const auto = this.breaker.haltFor(symbol);
+    if (auto) {
+      const until = new Date(auto.until).toISOString().slice(11, 16);
+      throw new HttpError(503, 'trading_halted', `Trading in ${symbol} is paused until ${until} UTC. ${auto.reason}.`);
+    }
+  }
+
+  private isHalted(symbol: string): boolean {
+    return this.halts.haltFor(symbol) !== null || this.breaker.haltFor(symbol) !== null;
+  }
+
   // --- Orders ---
 
-  async placeOrder(userId: string, req: PlaceOrderRequest): Promise<Order> {
+  async placeOrder(userId: string, req: PlaceOrderRequest, meta: PlaceOrderMeta = {}): Promise<Order> {
     const instrument = this.market.instrument(req.symbol);
     if (!instrument) throw new HttpError(404, 'unknown_symbol', `Unknown symbol ${req.symbol}`);
     this.validatePrecision(instrument, req);
+    await this.halts.refresh();
+    this.assertNotHalted(instrument.symbol);
 
     if (req.clientOrderId) {
       const [existing] = await this.db
@@ -206,9 +277,13 @@ export class TradingService extends EventEmitter<TradingEvents> {
 
     await this.ensureFunded(userId);
     const ticker = await this.quote(req.symbol);
-    const last = d(ticker.last);
+    // The quote may have tripped the breaker.
+    this.assertNotHalted(instrument.symbol);
+    const snap = (v: number) => d(v).toDecimalPlaces(instrument.pricePrecision);
+    const last = snap(ticker.last);
     const qty = d(req.quantity);
     const trigger = req.triggerPrice ? d(req.triggerPrice) : null;
+    const slippage = req.type === 'limit' ? null : d(req.maxSlippagePercent ?? DEFAULT_MAX_SLIPPAGE_PERCENT);
 
     if (req.type === 'stop_loss' && trigger) {
       if (req.side === 'sell' && trigger.gte(last)) throw badOrder('A sell stop-loss must be below the current price');
@@ -219,27 +294,57 @@ export class TradingService extends EventEmitter<TradingEvents> {
       if (req.side === 'buy' && trigger.gte(last)) throw badOrder('A buy take-profit must be below the current price');
     }
 
+    if (req.type === 'limit') {
+      // Fat-finger check: a limit far through the market is almost always a typo.
+      const limit = d(req.limitPrice!);
+      const band = d(this.limits.priceBandPercent).div(100);
+      if (req.side === 'buy' && limit.gt(last.times(d(1).plus(band)))) {
+        throw badOrder(`A buy limit more than ${this.limits.priceBandPercent}% above the current price looks like a typo`);
+      }
+      if (req.side === 'sell' && limit.lt(last.times(d(1).minus(band)))) {
+        throw badOrder(`A sell limit more than ${this.limits.priceBandPercent}% below the current price looks like a typo`);
+      }
+    }
+
+    // The price the order is expected to trade near, for size limits.
+    const expected = req.type === 'limit' ? d(req.limitPrice!) : trigger ?? last;
+    if (qty.times(expected).gt(this.limits.maxOrderNotional)) {
+      throw badOrder(`Orders are limited to ${this.limits.maxOrderNotional.toLocaleString('en-US')} ${instrument.quote} each`);
+    }
+
     const fee = FEE_RATE[instrument.assetClass];
     const heldAsset = req.side === 'buy' ? instrument.quote : instrument.base;
     let held: Decimal;
     if (req.side === 'sell') {
       held = qty;
     } else {
-      const ask = d(ticker.ask ?? ticker.last);
+      // Reserve the worst price the order can fill at: its limit, or its reference price plus
+      // the slippage allowance (worse fills are rejected). A buy trailing stop's level only
+      // moves down from where it starts.
+      const worst = d(1).plus(slippage?.div(100) ?? 0);
       const ref =
         req.type === 'market'
-          ? ask.times(MARKET_BUFFER)
+          ? last.times(worst)
           : req.type === 'limit'
             ? d(req.limitPrice!)
             : req.type === 'trailing_stop'
-              ? last.times(d(1).plus(d(req.trailPercent!).div(100))).times(TRIGGER_BUFFER)
-              : trigger!.times(TRIGGER_BUFFER);
+              ? last.times(d(1).plus(d(req.trailPercent!).div(100))).times(worst)
+              : trigger!.times(worst);
       held = roundUp(qty.times(ref).times(d(1).plus(fee)));
     }
 
     let row: OrderRow;
     try {
       row = await this.db.transaction(async (tx) => {
+        // Serialise a user's placements so the open-order cap cannot be raced past.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${'orders:' + userId}))`);
+        const [open] = await tx
+          .select({ n: sql<number>`count(*)::int` })
+          .from(orders)
+          .where(and(eq(orders.userId, userId), eq(orders.status, 'open')));
+        if ((open?.n ?? 0) >= this.limits.maxOpenOrders) {
+          throw conflict('too_many_open_orders', `You can have at most ${this.limits.maxOpenOrders} open orders`);
+        }
         const [o] = await tx
           .insert(orders)
           .values({
@@ -256,6 +361,8 @@ export class TradingService extends EventEmitter<TradingEvents> {
             triggerPrice: req.triggerPrice,
             trailPercent: req.trailPercent,
             trailReferencePrice: req.type === 'trailing_stop' ? last.toFixed() : null,
+            maxSlippagePercent: slippage?.toFixed() ?? null,
+            apiKeyId: meta.apiKeyId ?? null,
             heldAmount: held.toFixed(),
             heldAsset,
           })
@@ -362,6 +469,8 @@ export class TradingService extends EventEmitter<TradingEvents> {
     if (!provider) return;
     const stop = provider.subscribe({ kind: 'ticker', symbol }, (ev) => {
       if (ev.type !== 'ticker') return;
+      const halt = this.breaker.record(symbol, ev.data.last);
+      if (halt) this.log.warn({ symbol, reason: halt.reason, until: new Date(halt.until) }, 'Circuit breaker tripped');
       this.quotes.set(symbol, { ticker: ev.data, at: this.now() });
       for (const w of this.quoteWaiters.get(symbol) ?? []) w();
       if (this.open.get(symbol)?.size) void this.enqueue(symbol, () => this.onTicker(symbol, ev.data));
@@ -411,6 +520,8 @@ export class TradingService extends EventEmitter<TradingEvents> {
   /** Decides whether an open order should fill at this price, and at what price. */
   private async evaluate(o: OrderRow, t: Ticker): Promise<void> {
     if (!this.open.get(o.symbol)?.has(o.id)) return;
+    // While halted, nothing triggers or fills; orders wait for trading to resume.
+    if (this.isHalted(o.symbol)) return;
     // Feeds deliver floating-point numbers (220.4 - 0.01 = 220.39000000000001); snap to the tick size.
     const dp = this.market.instrument(o.symbol)?.pricePrecision ?? MONEY_DP;
     const px = (v: number) => d(v).toDecimalPlaces(dp);
@@ -420,10 +531,13 @@ export class TradingService extends EventEmitter<TradingEvents> {
     const buy = o.side === 'buy';
     const marketPrice = buy ? ask : bid;
     let fillAt: Decimal | null = null;
+    // What a market-priced fill is measured against for slippage protection.
+    let reference: Decimal | null = null;
 
     switch (o.type) {
       case 'market':
         fillAt = marketPrice;
+        reference = last;
         break;
       case 'limit': {
         const limit = d(o.limitPrice!);
@@ -433,11 +547,13 @@ export class TradingService extends EventEmitter<TradingEvents> {
       case 'stop_loss': {
         const trigger = d(o.triggerPrice!);
         if (buy ? last.gte(trigger) : last.lte(trigger)) fillAt = marketPrice;
+        reference = trigger;
         break;
       }
       case 'take_profit': {
         const trigger = d(o.triggerPrice!);
         if (buy ? last.lte(trigger) : last.gte(trigger)) fillAt = marketPrice;
+        reference = trigger;
         break;
       }
       case 'trailing_stop': {
@@ -451,10 +567,36 @@ export class TradingService extends EventEmitter<TradingEvents> {
         }
         const stop = buy ? ref.times(d(1).plus(pct)) : ref.times(d(1).minus(pct));
         if (buy ? last.gte(stop) : last.lte(stop)) fillAt = marketPrice;
+        reference = stop;
         break;
       }
     }
-    if (fillAt) await this.fill(o, fillAt);
+    if (!fillAt) return;
+
+    if (reference && o.maxSlippagePercent) {
+      const allowed = d(o.maxSlippagePercent).div(100);
+      const worst = buy ? reference.times(d(1).plus(allowed)) : reference.times(d(1).minus(allowed));
+      if (buy ? fillAt.gt(worst) : fillAt.lt(worst)) {
+        const off = fillAt.minus(reference).abs().div(reference).times(100).toDecimalPlaces(2);
+        await this.reject(
+          o,
+          `Slippage protection: the ${buy ? 'ask' : 'bid'} was ${fillAt.toFixed()}, ${off.toFixed()}% from ` +
+            `${reference.toFixed()}, beyond your ${d(o.maxSlippagePercent).toFixed()}% limit`,
+        );
+        return;
+      }
+    }
+    await this.fill(o, fillAt);
+  }
+
+  private async reject(o: OrderRow, reason: string): Promise<void> {
+    const row = await this.db.transaction(async (tx) => {
+      const [cur] = await tx.select().from(orders).where(eq(orders.id, o.id)).for('update');
+      if (!cur || cur.status !== 'open') return null;
+      return this.closeOrder(tx, cur, 'rejected', reason);
+    });
+    this.untrack(row ?? o);
+    if (row) this.emit('order', row.userId, toOrder(row));
   }
 
   private async persistTrail(o: OrderRow): Promise<void> {

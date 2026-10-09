@@ -11,14 +11,14 @@ import { SimulatedProvider } from '../src/market/simulated.js';
 import type { MarketDataProvider } from '../src/market/types.js';
 
 /** Builds the app against the test database and Redis, resetting both before each test. */
-export function useTestApp(opts: { providers?: MarketDataProvider[] } = {}): {
+export function useTestApp(opts: { providers?: MarketDataProvider[]; env?: Record<string, string> } = {}): {
   readonly app: FastifyInstance;
   readonly sim: SimulatedProvider;
 } {
   // Market data comes from hand-driven providers so tests never touch the network.
   const sim = new SimulatedProvider({ autoTick: false, now: () => Date.UTC(2026, 0, 5, 15, 0, 0) });
   const ctx = { sim } as { app: FastifyInstance; sim: SimulatedProvider };
-  const config = loadConfig();
+  const config = loadConfig({ ...process.env, ...opts.env });
   const { db, pool } = createDb(config.DATABASE_URL);
   const redis = new Redis(config.REDIS_URL);
 
@@ -29,8 +29,12 @@ export function useTestApp(opts: { providers?: MarketDataProvider[] } = {}): {
   });
 
   beforeEach(async () => {
-    await db.execute(sql`truncate table fills, positions, orders, ledger_entries, ledger_transactions, ledger_accounts, audit_log, sessions, users cascade`);
+    await db.execute(
+      sql`truncate table fills, positions, orders, api_keys, ledger_entries, ledger_transactions, ledger_accounts, audit_log, sessions, users cascade`,
+    );
     await redis.flushdb();
+    ctx.app.trading.breaker.reset();
+    await ctx.app.trading.halts.refresh();
   });
 
   afterAll(async () => {

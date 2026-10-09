@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import type { PublicUser } from '@dta/shared';
 import { api, errorMessage } from '../api';
 import { Terminal } from '../terminal/Terminal';
+import { ApiKeysPanel } from './ApiKeysPanel';
 
 interface Props {
   user: PublicUser;
@@ -36,6 +37,8 @@ export function Dashboard({ user, onUserChange, onSignOut }: Props) {
       ) : (
         <main className="grid">
           <MfaPanel user={user} onUserChange={onUserChange} />
+          {/* Remount when two-factor changes: turning it off revokes every key. */}
+          <ApiKeysPanel key={String(user.mfaEnabled)} user={user} />
         </main>
       )}
     </>

@@ -68,8 +68,32 @@ export const auditLog = pgTable(
   (t) => [index('audit_log_user_id_created_at_idx').on(t.userId, t.createdAt)],
 );
 
+/**
+ * Long-lived credentials for programs. Keys look like `dta_<prefix>_<secret>`; only the
+ * SHA-256 of the whole key is stored, and the prefix is kept to find the row and to tell keys apart.
+ */
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    prefix: text('prefix').notNull(),
+    keyHash: text('key_hash').notNull(),
+    scopes: text('scopes', { enum: ['read', 'trade'] }).array().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  (t) => [uniqueIndex('api_keys_prefix_key').on(t.prefix), index('api_keys_user_id_idx').on(t.userId)],
+);
+
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
+export type ApiKeyRow = typeof apiKeys.$inferSelect;
 
 // --- Trading: double-entry ledger, orders, fills ---
 
@@ -157,6 +181,10 @@ export const orders = pgTable(
     trailPercent: numeric('trail_percent', { precision: 5, scale: 2 }),
     /** Trailing stops: best price seen since placement (highest for sells, lowest for buys). */
     trailReferencePrice: amount('trail_reference_price'),
+    /** Reject instead of filling if the fill price is this many percent worse than the reference. */
+    maxSlippagePercent: numeric('max_slippage_percent', { precision: 4, scale: 2 }),
+    /** Set when the order came in through an API key rather than the web app. */
+    apiKeyId: uuid('api_key_id').references(() => apiKeys.id, { onDelete: 'set null' }),
     /** Funds reserved for this order (quote asset for buys, base asset for sells). */
     heldAmount: amount('held_amount').notNull().default('0'),
     heldAsset: text('held_asset').notNull(),

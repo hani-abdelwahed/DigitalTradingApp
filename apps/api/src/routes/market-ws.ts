@@ -9,11 +9,14 @@ import {
   type Order,
   type ServerMessage,
 } from '@dta/shared';
+import { isApiKey } from '../auth/api-keys.js';
 import type { AccessClaims } from '../auth/service.js';
 import type { HubClient } from '../market/hub.js';
 
 const AUTH_TIMEOUT_MS = 5_000;
 const HEARTBEAT_MS = 30_000;
+// Connections opened with an API key re-check it this often, so revoking a key ends its streams.
+const API_KEY_RECHECK_MS = 60_000;
 // Close clients that fall this far behind instead of buffering without limit.
 const MAX_BUFFERED_BYTES = 2 * 1024 * 1024;
 // Token bucket for client messages: bursts of 20, refilling 5 per second.
@@ -33,6 +36,7 @@ export default async function marketWsRoutes(app: FastifyInstance): Promise<void
     let userId: string | null = null;
     let stopOrders: (() => void) | null = null;
     let expiryTimer: NodeJS.Timeout | null = null;
+    let recheckTimer: NodeJS.Timeout | null = null;
     let tokens = MSG_BURST;
     let lastRefill = Date.now();
     let alive = true;
@@ -77,6 +81,23 @@ export default async function marketWsRoutes(app: FastifyInstance): Promise<void
 
       if (msg.type === 'auth') {
         try {
+          if (isApiKey(msg.token)) {
+            const { user, key } = await app.apiKeys.authenticate(msg.token);
+            if (!key.scopes.includes('read')) throw new Error('missing read scope');
+            if (userId && userId !== user.id) throw new Error('user changed');
+            userId = user.id;
+            authenticated = true;
+            clearTimeout(authTimer);
+            if (expiryTimer) clearTimeout(expiryTimer);
+            expiryTimer = null;
+            if (!recheckTimer) {
+              const token = msg.token;
+              recheckTimer = setInterval(() => {
+                app.apiKeys.authenticate(token).catch(() => socket.close(CLOSE.sessionExpired, 'API key revoked or expired'));
+              }, API_KEY_RECHECK_MS);
+            }
+            return send({ type: 'authenticated' });
+          }
           const claims = app.jwt.verify<AccessClaims & { exp: number }>(msg.token);
           if (claims.typ !== 'access') throw new Error('wrong token type');
           const user = await app.auth.authenticate(claims);
@@ -158,6 +179,7 @@ export default async function marketWsRoutes(app: FastifyInstance): Promise<void
     socket.on('close', () => {
       clearTimeout(authTimer);
       if (expiryTimer) clearTimeout(expiryTimer);
+      if (recheckTimer) clearInterval(recheckTimer);
       clearInterval(heartbeat);
       stopOrders?.();
       app.marketHub.removeClient(client);
