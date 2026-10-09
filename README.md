@@ -1,6 +1,6 @@
 # DigitalTradingApp
 
-A full-stack trading app for stocks/ETFs and crypto. This is the foundation: accounts, sign-in with two-factor authentication, and the web app shell. Market data, the trading terminal and order management come next.
+A full-stack trading app for stocks/ETFs and crypto. So far: accounts with two-factor sign-in, and a trading screen with live charts, technical indicators, order book and recent trades. Order management and the ledger come next.
 
 ## Layout
 
@@ -27,6 +27,18 @@ Generate `JWT_SECRET` and `ENCRYPTION_KEY` with:
 ```sh
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
+
+## Market data
+
+| Market | Source | Account needed |
+| --- | --- | --- |
+| Crypto (BTC, ETH, SOL, BNB, XRP, DOGE vs USDT) | Binance public market data | No |
+| US stocks and ETFs | Alpaca market data (IEX feed) | Free Alpaca account; set `ALPACA_KEY_ID` and `ALPACA_SECRET_KEY` |
+| US stocks and ETFs, no Alpaca keys | Generated prices, labelled "Simulated prices" in the app | No |
+
+The browser holds one WebSocket to `/ws/market`. It authenticates with the access token and subscribes to channels: `ticker:SYM`, `trades:SYM`, `book:SYM` and `candles:SYM:TF` (TF is one of `1m 5m 15m 1h 4h 1d`). The server opens one upstream subscription per channel however many users share it. It sends at most one ticker, book or live-candle update per channel every 100 ms, and every trade. Slow or abusive connections are closed. History comes from `GET /market/candles?symbol=&timeframe=&limit=`.
+
+Binance blocks some regions, including the US, so check it is reachable where the API runs.
 
 ## Checks
 
