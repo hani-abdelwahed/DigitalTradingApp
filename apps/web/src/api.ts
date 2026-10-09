@@ -1,6 +1,10 @@
 import type {
   ApiError,
   Candle,
+  Fill,
+  Order,
+  PlaceOrderRequest,
+  Portfolio,
   Instrument,
   Timeframe,
   LoginRequest,
@@ -57,7 +61,8 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
     if (await refreshSession()) return request<T>(path, init, false);
   }
   if (res.status === 204) return undefined as T;
-  const body = await res.json().catch(() => ({ error: 'bad_response', message: res.statusText }));
+  const body = await res.json().catch(() => null);
+  if (body === null) throw new ApiRequestError(res.status, { error: 'bad_response', message: 'Unexpected response from the server' });
   if (!res.ok) throw new ApiRequestError(res.status, body as ApiError);
   return body as T;
 }
@@ -104,6 +109,11 @@ export const api = {
   instruments: () => request<Instrument[]>('/market/instruments'),
   candles: (symbol: string, timeframe: Timeframe, limit = 500) =>
     request<Candle[]>(`/market/candles?${new URLSearchParams({ symbol, timeframe, limit: String(limit) })}`),
+  portfolio: () => request<Portfolio>('/portfolio'),
+  orders: (status: 'open' | 'closed' | 'all' = 'all') => request<Order[]>(`/orders?status=${status}&limit=100`),
+  fills: () => request<Fill[]>('/fills?limit=100'),
+  placeOrder: (body: PlaceOrderRequest) => post<Order>('/orders', body),
+  cancelOrder: (id: string) => request<Order>(`/orders/${id}`, { method: 'DELETE' }),
 };
 
 export function marketSocketUrl(): string {

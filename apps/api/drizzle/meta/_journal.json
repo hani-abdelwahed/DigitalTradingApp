@@ -8,6 +8,20 @@
       "when": 1791532923777,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791536548343,
+      "tag": "0001_trading",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791536549348,
+      "tag": "0002_ledger_integrity",
+      "breakpoints": true
     }
   ]
 }

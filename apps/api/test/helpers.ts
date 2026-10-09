@@ -8,10 +8,14 @@ import { createDb } from '../src/db/client.js';
 import { runMigrations } from '../src/db/migrate.js';
 import { MarketRegistry } from '../src/market/registry.js';
 import { SimulatedProvider } from '../src/market/simulated.js';
+import type { MarketDataProvider } from '../src/market/types.js';
 
 /** Builds the app against the test database and Redis, resetting both before each test. */
-export function useTestApp(): { readonly app: FastifyInstance; readonly sim: SimulatedProvider } {
-  // Market data comes from a hand-ticked simulated provider so tests never touch the network.
+export function useTestApp(opts: { providers?: MarketDataProvider[] } = {}): {
+  readonly app: FastifyInstance;
+  readonly sim: SimulatedProvider;
+} {
+  // Market data comes from hand-driven providers so tests never touch the network.
   const sim = new SimulatedProvider({ autoTick: false, now: () => Date.UTC(2026, 0, 5, 15, 0, 0) });
   const ctx = { sim } as { app: FastifyInstance; sim: SimulatedProvider };
   const config = loadConfig();
@@ -20,12 +24,12 @@ export function useTestApp(): { readonly app: FastifyInstance; readonly sim: Sim
 
   beforeAll(async () => {
     await runMigrations(config.DATABASE_URL);
-    ctx.app = await buildApp({ config, db, redis, logger: false, market: new MarketRegistry([sim]) });
+    ctx.app = await buildApp({ config, db, redis, logger: false, market: new MarketRegistry(opts.providers ?? [sim]) });
     await ctx.app.ready();
   });
 
   beforeEach(async () => {
-    await db.execute(sql`truncate table audit_log, sessions, users cascade`);
+    await db.execute(sql`truncate table fills, positions, orders, ledger_entries, ledger_transactions, ledger_accounts, audit_log, sessions, users cascade`);
     await redis.flushdb();
   });
 

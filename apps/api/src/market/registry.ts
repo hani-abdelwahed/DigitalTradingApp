@@ -17,6 +17,10 @@ export class MarketRegistry {
     return [...this.bySymbol.values()].map((e) => e.instrument);
   }
 
+  instrument(symbol: string): Instrument | undefined {
+    return this.bySymbol.get(symbol)?.instrument;
+  }
+
   provider(symbol: string): MarketDataProvider | undefined {
     return this.bySymbol.get(symbol)?.provider;
   }

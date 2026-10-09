@@ -2,9 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
 import {
   MAX_CHANNELS_PER_CONNECTION,
+  ORDERS_CHANNEL,
   channelKey,
   clientMessage,
   parseChannel,
+  type Order,
   type ServerMessage,
 } from '@dta/shared';
 import type { AccessClaims } from '../auth/service.js';
@@ -28,6 +30,8 @@ export const CLOSE = {
 export default async function marketWsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/ws/market', { websocket: true }, (socket: WebSocket, req) => {
     let authenticated = false;
+    let userId: string | null = null;
+    let stopOrders: (() => void) | null = null;
     let expiryTimer: NodeJS.Timeout | null = null;
     let tokens = MSG_BURST;
     let lastRefill = Date.now();
@@ -75,7 +79,10 @@ export default async function marketWsRoutes(app: FastifyInstance): Promise<void
         try {
           const claims = app.jwt.verify<AccessClaims & { exp: number }>(msg.token);
           if (claims.typ !== 'access') throw new Error('wrong token type');
-          await app.auth.authenticate(claims);
+          const user = await app.auth.authenticate(claims);
+          // A connection belongs to one user; a fresh token must be for the same account.
+          if (userId && userId !== user.id) throw new Error('user changed');
+          userId = user.id;
           authenticated = true;
           clearTimeout(authTimer);
           // The stream lives only as long as the token; clients send a fresh token to extend it.
@@ -95,6 +102,18 @@ export default async function marketWsRoutes(app: FastifyInstance): Promise<void
       if (msg.type === 'subscribe') {
         const added: string[] = [];
         for (const raw of msg.channels) {
+          if (raw === ORDERS_CHANNEL) {
+            if (!stopOrders) {
+              const owner = userId!;
+              const onOrder = (uid: string, order: Order) => {
+                if (uid === owner) send({ type: 'order', channel: ORDERS_CHANNEL, data: order });
+              };
+              app.trading.on('order', onOrder);
+              stopOrders = () => app.trading.off('order', onOrder);
+              added.push(ORDERS_CHANNEL);
+            }
+            continue;
+          }
           const channel = parseChannel(raw);
           if (!channel) {
             fail('bad_channel', `Unknown channel ${raw}`);
@@ -120,6 +139,12 @@ export default async function marketWsRoutes(app: FastifyInstance): Promise<void
       // unsubscribe
       const removed: string[] = [];
       for (const raw of msg.channels) {
+        if (raw === ORDERS_CHANNEL && stopOrders) {
+          stopOrders();
+          stopOrders = null;
+          removed.push(ORDERS_CHANNEL);
+          continue;
+        }
         const channel = parseChannel(raw);
         const key = channel && channelKey(channel);
         if (key && channels.delete(key)) {
@@ -134,6 +159,7 @@ export default async function marketWsRoutes(app: FastifyInstance): Promise<void
       clearTimeout(authTimer);
       if (expiryTimer) clearTimeout(expiryTimer);
       clearInterval(heartbeat);
+      stopOrders?.();
       app.marketHub.removeClient(client);
     });
 

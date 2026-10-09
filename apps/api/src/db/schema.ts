@@ -4,7 +4,9 @@ import {
   boolean,
   index,
   inet,
+  check,
   jsonb,
+  numeric,
   pgTable,
   text,
   timestamp,
@@ -68,3 +70,154 @@ export const auditLog = pgTable(
 
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
+
+// --- Trading: double-entry ledger, orders, fills ---
+
+const amount = (name: string) => numeric(name, { precision: 38, scale: 18 });
+
+/**
+ * One account per (owner, purpose, asset). User accounts are `available` funds and `held`
+ * funds reserved by open orders; both are kept non-negative by a check constraint, so the
+ * database itself refuses to overspend. System accounts (`funding`, `market`, `fees`) are
+ * the other side of deposits, trades and fees and may go negative.
+ */
+export const ledgerAccounts = pgTable(
+  'ledger_accounts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'restrict' }),
+    kind: text('kind', { enum: ['available', 'held', 'funding', 'market', 'fees'] }).notNull(),
+    asset: text('asset').notNull(),
+    balance: amount('balance').notNull().default('0'),
+    allowNegative: boolean('allow_negative').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('ledger_accounts_code_key').on(t.code),
+    index('ledger_accounts_user_id_idx').on(t.userId),
+    check('ledger_accounts_non_negative', sql`${t.allowNegative} OR ${t.balance} >= 0`),
+  ],
+);
+
+/** A balanced set of entries: for every asset, the entries sum to zero (enforced by a trigger). */
+export const ledgerTransactions = pgTable(
+  'ledger_transactions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind', { enum: ['deposit', 'hold', 'release', 'trade'] }).notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'restrict' }),
+    orderId: uuid('order_id'),
+    description: text('description'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('ledger_transactions_user_id_idx').on(t.userId, t.createdAt)],
+);
+
+/** Append-only: a trigger rejects updates and deletes. */
+export const ledgerEntries = pgTable(
+  'ledger_entries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    transactionId: uuid('transaction_id')
+      .notNull()
+      .references(() => ledgerTransactions.id),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => ledgerAccounts.id),
+    asset: text('asset').notNull(),
+    amount: amount('amount').notNull(),
+  },
+  (t) => [
+    index('ledger_entries_transaction_id_idx').on(t.transactionId),
+    index('ledger_entries_account_id_idx').on(t.accountId),
+    check('ledger_entries_non_zero', sql`${t.amount} <> 0`),
+  ],
+);
+
+export const orders = pgTable(
+  'orders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    clientOrderId: text('client_order_id'),
+    symbol: text('symbol').notNull(),
+    baseAsset: text('base_asset').notNull(),
+    quoteAsset: text('quote_asset').notNull(),
+    side: text('side', { enum: ['buy', 'sell'] }).notNull(),
+    type: text('type', { enum: ['market', 'limit', 'stop_loss', 'take_profit', 'trailing_stop'] }).notNull(),
+    status: text('status', { enum: ['open', 'filled', 'cancelled', 'rejected'] }).notNull(),
+    quantity: amount('quantity').notNull(),
+    filledQuantity: amount('filled_quantity').notNull().default('0'),
+    averageFillPrice: amount('average_fill_price'),
+    limitPrice: amount('limit_price'),
+    triggerPrice: amount('trigger_price'),
+    trailPercent: numeric('trail_percent', { precision: 5, scale: 2 }),
+    /** Trailing stops: best price seen since placement (highest for sells, lowest for buys). */
+    trailReferencePrice: amount('trail_reference_price'),
+    /** Funds reserved for this order (quote asset for buys, base asset for sells). */
+    heldAmount: amount('held_amount').notNull().default('0'),
+    heldAsset: text('held_asset').notNull(),
+    reason: text('reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('orders_user_client_order_id_key').on(t.userId, t.clientOrderId),
+    index('orders_user_id_created_at_idx').on(t.userId, t.createdAt),
+    index('orders_open_idx').on(t.symbol).where(sql`${t.status} = 'open'`),
+    check('orders_quantity_positive', sql`${t.quantity} > 0`),
+    check('orders_filled_within_quantity', sql`${t.filledQuantity} >= 0 AND ${t.filledQuantity} <= ${t.quantity}`),
+  ],
+);
+
+export const fills = pgTable(
+  'fills',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    symbol: text('symbol').notNull(),
+    side: text('side', { enum: ['buy', 'sell'] }).notNull(),
+    quantity: amount('quantity').notNull(),
+    price: amount('price').notNull(),
+    fee: amount('fee').notNull(),
+    feeAsset: text('fee_asset').notNull(),
+    ledgerTransactionId: uuid('ledger_transaction_id')
+      .notNull()
+      .references(() => ledgerTransactions.id),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('fills_user_id_created_at_idx').on(t.userId, t.createdAt)],
+);
+
+/**
+ * Average-cost projection of each holding, updated with every fill. Quantities must always
+ * match the ledger (available + held of the base asset); a reconciliation check verifies it.
+ */
+export const positions = pgTable(
+  'positions',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    symbol: text('symbol').notNull(),
+    baseAsset: text('base_asset').notNull(),
+    quoteAsset: text('quote_asset').notNull(),
+    quantity: amount('quantity').notNull().default('0'),
+    averageCost: amount('average_cost').notNull().default('0'),
+    realizedPnl: amount('realized_pnl').notNull().default('0'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('positions_user_symbol_key').on(t.userId, t.symbol)],
+);
+
+export type LedgerAccount = typeof ledgerAccounts.$inferSelect;
+export type OrderRow = typeof orders.$inferSelect;
+export type FillRow = typeof fills.$inferSelect;
