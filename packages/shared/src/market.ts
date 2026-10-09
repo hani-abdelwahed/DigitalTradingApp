@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { Order } from './trading.js';
 
 export const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d'] as const;
 export type Timeframe = (typeof TIMEFRAMES)[number];
@@ -117,7 +118,12 @@ export type ServerMessage =
   | { type: 'ticker'; channel: string; data: Ticker }
   | { type: 'trade'; channel: string; data: Trade }
   | { type: 'book'; channel: string; data: OrderBook }
-  | { type: 'candle'; channel: string; data: Candle };
+  | { type: 'candle'; channel: string; data: Candle }
+  /** On the private `orders` channel: one of your orders changed (placed, filled, cancelled...). */
+  | { type: 'order'; channel: 'orders'; data: Order };
+
+/** Private channel carrying the signed-in user's order updates. */
+export const ORDERS_CHANNEL = 'orders';
 
 export const candlesQuery = z.object({
   symbol: z.string().regex(SYMBOL),

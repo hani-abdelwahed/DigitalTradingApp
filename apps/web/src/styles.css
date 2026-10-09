@@ -52,9 +52,9 @@ img { background: white; padding: 8px; border-radius: 6px; align-self: center; }
 /* Trading terminal */
 .terminal {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  grid-template-rows: auto minmax(420px, 1fr) auto;
-  grid-template-areas: 'ticker ticker' 'chart side' 'entry side';
+  grid-template-columns: minmax(0, 1fr) 300px 300px;
+  grid-template-rows: auto minmax(400px, 1fr) 240px;
+  grid-template-areas: 'ticker ticker ticker' 'chart side entry' 'account side entry';
   gap: 8px;
   padding: 8px;
   height: calc(100vh - 57px);
@@ -79,8 +79,32 @@ img { background: white; padding: 8px; border-radius: 6px; align-self: center; }
 .side { grid-area: side; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .book { flex: none; overflow: hidden; }
 .trades { flex: 1; min-height: 160px; overflow: hidden; }
-.order-entry { grid-area: entry; padding-bottom: 12px; }
-.order-entry p { padding: 8px 12px 0; }
+/* Order form */
+.entry { grid-area: entry; min-height: 0; overflow-y: auto; }
+.order-form form { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.order-form label { font-size: 12px; }
+.order-form select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 9px; font-size: 14px; }
+.order-form input { padding: 8px 10px; font-variant-numeric: tabular-nums; }
+.side-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--bg); padding: 3px; border-radius: 6px; }
+.side-toggle button { background: transparent; color: var(--muted); }
+.side-toggle .buy.active { background: var(--up); color: #fff; }
+.side-toggle .sell.active { background: var(--down); color: #fff; }
+.pct { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.pct button { background: #1e222d; color: var(--muted); font-weight: 500; font-size: 12px; padding: 5px; }
+.summary { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; margin: 0; font-size: 12px; }
+.summary dt { color: var(--muted); }
+.summary dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.submit.buy { background: var(--up); }
+.submit.sell { background: var(--down); }
+.success { color: var(--up); margin: 0; }
+
+/* Account panel */
+.account { grid-area: account; min-height: 0; }
+.table-wrap { overflow: auto; flex: 1; min-height: 0; }
+.account table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.account th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 500; text-align: left; padding: 6px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.account td { padding: 5px 12px; border-bottom: 1px solid #1e222d; white-space: nowrap; }
+.account td button.link { padding: 0; color: var(--accent); font-weight: 500; font-size: 12px; }
 .book-head, .book-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr; padding: 2px 12px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .book-head { padding-top: 6px; padding-bottom: 4px; }
 .book-head span:not(:first-child), .book-row span:not(:first-child) { text-align: right; }
@@ -95,8 +119,17 @@ img { background: white; padding: 8px; border-radius: 6px; align-self: center; }
 .book-spread { display: flex; align-items: baseline; gap: 10px; padding: 6px 12px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 .trade-list { overflow-y: auto; min-height: 0; flex: 1; }
 
+@media (max-width: 1280px) {
+  .terminal {
+    grid-template-columns: minmax(0, 1fr) 300px;
+    grid-template-rows: auto minmax(420px, 1fr) 280px 420px;
+    grid-template-areas: 'ticker ticker' 'chart entry' 'account entry' 'account side';
+    height: auto;
+  }
+}
+
 @media (max-width: 900px) {
-  .terminal { grid-template-columns: 1fr; grid-template-rows: auto 420px auto auto; grid-template-areas: 'ticker' 'chart' 'side' 'entry'; height: auto; }
+  .terminal { grid-template-columns: 1fr; grid-template-rows: auto 420px auto auto 320px; grid-template-areas: 'ticker' 'chart' 'entry' 'side' 'account'; height: auto; }
   .tickerbar { gap: 12px; }
   .stat.venue { margin-left: 0; }
   .topbar { flex-wrap: wrap; }

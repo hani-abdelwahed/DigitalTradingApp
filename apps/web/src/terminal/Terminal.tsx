@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { TIMEFRAMES, type Instrument, type Timeframe } from '@dta/shared';
 import { api, errorMessage, marketSocketUrl } from '../api';
 import { MarketSocketContext } from '../market/hooks';
 import { MarketSocket } from '../market/socket';
+import { AccountContext, useAccountState } from './account';
+import { AccountPanel } from './AccountPanel';
 import { Chart, INDICATORS, type IndicatorId } from './Chart';
+import { OrderForm } from './OrderForm';
 import { OrderBook } from './OrderBook';
 import { TickerBar } from './TickerBar';
 import { Trades } from './Trades';
@@ -61,42 +64,52 @@ export function Terminal() {
       indicators: p.indicators.includes(id) ? p.indicators.filter((x) => x !== id) : [...p.indicators, id],
     }));
 
+  const select = (symbol: string) => setPrefs((p) => ({ ...p, symbol }));
+
   return (
     <MarketSocketContext.Provider value={socket}>
-      <div className="terminal">
-        <TickerBar instruments={instruments!} instrument={instrument} onSelect={(symbol) => setPrefs((p) => ({ ...p, symbol }))} />
-        <section className="panel chart-panel">
-          <div className="toolbar">
-            <div className="seg" role="group" aria-label="Timeframe">
-              {TIMEFRAMES.map((tf) => (
-                <button
-                  key={tf}
-                  className={tf === prefs.timeframe ? 'active' : ''}
-                  onClick={() => setPrefs((p) => ({ ...p, timeframe: tf }))}
-                >
-                  {tf}
-                </button>
-              ))}
+      <AccountProvider>
+        <div className="terminal">
+          <TickerBar instruments={instruments!} instrument={instrument} onSelect={select} />
+          <section className="panel chart-panel">
+            <div className="toolbar">
+              <div className="seg" role="group" aria-label="Timeframe">
+                {TIMEFRAMES.map((tf) => (
+                  <button
+                    key={tf}
+                    className={tf === prefs.timeframe ? 'active' : ''}
+                    onClick={() => setPrefs((p) => ({ ...p, timeframe: tf }))}
+                  >
+                    {tf}
+                  </button>
+                ))}
+              </div>
+              <div className="seg" role="group" aria-label="Indicators">
+                {INDICATORS.map((ind) => (
+                  <button key={ind.id} className={indicators.has(ind.id) ? 'active' : ''} onClick={() => toggle(ind.id)}>
+                    {ind.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="seg" role="group" aria-label="Indicators">
-              {INDICATORS.map((ind) => (
-                <button key={ind.id} className={indicators.has(ind.id) ? 'active' : ''} onClick={() => toggle(ind.id)}>
-                  {ind.label}
-                </button>
-              ))}
-            </div>
+            <Chart instrument={instrument} timeframe={prefs.timeframe} indicators={indicators} />
+          </section>
+          <div className="side">
+            <OrderBook instrument={instrument} />
+            <Trades instrument={instrument} />
           </div>
-          <Chart instrument={instrument} timeframe={prefs.timeframe} indicators={indicators} />
-        </section>
-        <div className="side">
-          <OrderBook instrument={instrument} />
-          <Trades instrument={instrument} />
+          <div className="entry">
+            <OrderForm instrument={instrument} />
+          </div>
+          <AccountPanel instruments={instruments!} onSelect={select} />
         </div>
-        <section className="panel order-entry">
-          <h3>Order entry</h3>
-          <p className="muted small">Buy and sell orders arrive in step 3.</p>
-        </section>
-      </div>
+      </AccountProvider>
     </MarketSocketContext.Provider>
   );
+}
+
+/** Account state needs the market socket, so it lives inside the socket provider. */
+function AccountProvider({ children }: { children: ReactNode }) {
+  const account = useAccountState();
+  return <AccountContext.Provider value={account}>{children}</AccountContext.Provider>;
 }

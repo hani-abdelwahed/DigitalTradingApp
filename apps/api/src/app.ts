@@ -16,6 +16,8 @@ import { SecretBox } from './lib/crypto.js';
 import { HttpError, unauthorized } from './lib/errors.js';
 import { MarketHub, MarketRegistry, createMarketRegistry } from './market/index.js';
 import authRoutes from './routes/auth.js';
+import tradingRoutes from './routes/trading.js';
+import { TradingService } from './trading/service.js';
 import healthRoutes from './routes/health.js';
 import marketWsRoutes from './routes/market-ws.js';
 import marketRoutes from './routes/market.js';
@@ -28,6 +30,7 @@ declare module 'fastify' {
     auth: AuthService;
     market: MarketRegistry;
     marketHub: MarketHub;
+    trading: TradingService;
     authenticate: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
@@ -106,7 +109,10 @@ export async function buildApp({ config, db, redis, market, logger = true }: App
   const registry = market ?? createMarketRegistry(config, app.log);
   app.decorate('market', registry);
   app.decorate('marketHub', new MarketHub(registry));
+  app.decorate('trading', new TradingService(db, registry, app.log));
+  app.addHook('onReady', () => app.trading.start());
   app.addHook('onClose', async () => {
+    app.trading.stop();
     app.marketHub.close();
     await registry.close();
   });
@@ -116,5 +122,6 @@ export async function buildApp({ config, db, redis, market, logger = true }: App
   await app.register(authRoutes);
   await app.register(marketRoutes);
   await app.register(marketWsRoutes);
+  await app.register(tradingRoutes);
   return app;
 }
