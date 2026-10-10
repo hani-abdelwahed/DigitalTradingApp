@@ -133,8 +133,10 @@ export class TradingService extends EventEmitter<TradingEvents> {
 
   /** Loads open orders and starts watching their markets. */
   async start(): Promise<void> {
-    await this.halts.refresh();
+    // Don't hold up startup on Redis: the cached halts refresh every second once it is
+    // reachable, and placing an order always re-reads them (and fails if it cannot).
     this.halts.start();
+    void this.halts.refresh().catch((err) => this.log.warn({ err }, 'Could not load trading halts yet'));
     const rows = await this.db.select().from(orders).where(eq(orders.status, 'open'));
     for (const o of rows) this.track(o);
   }
